@@ -1,0 +1,97 @@
+# Pipelines-as-Code trigger: build the website_static image on every push to
+# master.
+#
+# PAC matches this repo to the `website-static` Repository CR in the verseghy
+# namespace (website_k8s/verseghy-website/builds/pac-repository-static.yaml),
+# reads this file from the pushed revision, and runs it as a PipelineRun there.
+# That CR must exist before the first push to master that carries this file:
+# PAC ignores the events of a repository without one, so a push that lands
+# first builds no image.
+#
+# This is the only production build of the image; nothing else builds or
+# pushes it, and there is no .tekton/pull-request.yaml.
+#
+# The single task references the cluster's maintained `openshift-client` task
+# (no hand-rolled taskSpec/image). Its SCRIPT creates a self-contained Shipwright
+# BuildRun — the full build recipe lives inline in spec.build.spec, with
+# source.git.revision pinned to the exact pushed commit — then `oc wait`s for it
+# to complete, and PAC reports the verdict back onto the commit as a GitHub
+# check. `oc wait --for=jsonpath={.status.completionTime}` returns as soon as
+# the build finishes (success OR failure), so no polling loop is needed.
+#
+# The output image MUST be tagged with the pushed commit SHA ({{ revision }}):
+# argocd-image-updater (ImageUpdater CR in website_k8s) only considers tags
+# matching ^[0-9a-f]{40}$ when opening the deploy PR against website_k8s.
+# An untagged push lands on :latest, which the updater ignores — the image
+# builds fine but never deploys.
+#
+# Strategy: the cluster-wide `buildah` ClusterBuildStrategy runs a UBI 10
+# image, and RHEL 10 requires x86-64-v3 CPUs, which the hub's nodes lack. The
+# build therefore uses `buildah-ubi9`, a namespaced BuildStrategy in verseghy
+# that is a copy of the operator strategy on a RHEL 9 buildah image, managed in
+# website_k8s/verseghy-website/builds/buildstrategy-buildah-ubi9.yaml. Its
+# build-and-push step resources (4 CPU / 6Gi) are set there; this build adds
+# no stepResources of its own.
+#
+# What the build fetches: the base image from registry.access.redhat.com and
+# the image that holds the files, docker.io/verseghy/website_static by digest
+# (about 725 MB compressed; see README.md), both named in the Containerfile and
+# pulled anonymously. The strategy's vfs storage driver keeps a full copy of
+# the file tree for every layer, so the build pod needs about 4 GB of the
+# node's ephemeral storage while it runs (a vfs build of this recipe with the
+# strategy's buildah image, buildah 1.43.3, used 3.4 GB). The push sends
+# about 725 MB to ghcr.io.
+#
+# Timeouts: every layer is explicit and larger than the one inside it, so a
+# slow build fails at a known layer instead of being killed by Tekton's
+# 60-minute TaskRun default. Innermost first:
+#   Shipwright spec.build.spec.timeout 45m0s
+#   oc wait --timeout                  55m     (BuildRun + 10 min)
+#   Tekton task timeout                1h0m0s  (oc wait + 5 min)
+#   PipelineRun timeouts.pipeline      1h15m0s (task + 15 min)
+# The build itself has no compile step: it pulls two images, copies two
+# directories out of the second and pushes one large layer. The Shipwright layer is the timeout of
+# the inline build spec, never the BuildRun's own spec.timeout: Shipwright
+# treats spec.timeout as an override of a referenced Build and rejects it next
+# to spec.build.spec (reason BuildRunBuildFieldOverrideForbidden).
+#
+# SOURCE_COMMIT={{ revision }} is passed as a build arg; the Containerfile puts
+# it into the image's org.opencontainers.image.revision and vcs-ref labels.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: build-static
+  annotations:
+    pipelinesascode.tekton.dev/on-event: '[push]'
+    pipelinesascode.tekton.dev/on-target-branch: '[master]'
+    pipelinesascode.tekton.dev/max-keep-runs: '5'
+spec:
+  timeouts:
+    pipeline: '1h15m0s'
+  taskRunTemplate:
+    # Runs in verseghy; this SA can create/get BuildRuns via ClusterRole/edit.
+    serviceAccountName: pipeline
+  pipelineSpec:
+    tasks:
+      - name: trigger-shipwright-build
+        # Overrides Tekton's cluster default TaskRun timeout (60m) — see header.
+        timeout: '1h0m0s'
+        taskRef:
+          # Maintained task shipped with OpenShift Pipelines; pulled in-cluster.
+          resolver: cluster
+          params:
+            - name: kind
+              value: task
+            - name: name
+              value: openshift-client
+            - name: namespace
+              value: openshift-pipelines
+        params:
+          - name: SCRIPT
+            value: |
+              BR=$(echo '{"apiVersion":"shipwright.io/v1beta1","kind":"BuildRun","metadata":{"generateName":"static-pac-","labels":{"pipelinesascode.tekton.dev/sha":"{{ revision }}","app.kubernetes.io/managed-by":"pipelines-as-code"}},"spec":{"build":{"spec":{"source":{"type":"Git","git":{"url":"https://github.com/Verseghy/website_static","revision":"{{ revision }}"}},"strategy":{"name":"buildah-ubi9","kind":"BuildStrategy"},"paramValues":[{"name":"dockerfile","value":"Containerfile"},{"name":"build-args","values":[{"value":"SOURCE_COMMIT={{ revision }}"}]}],"output":{"image":"ghcr.io/verseghy/website_static:{{ revision }}","pushSecret":"ghcr-pull-secret"},"timeout":"45m0s"}}}}' | oc create -o name -f -)
+              echo "==> Created $BR (revision {{ revision }})"
+              oc wait --for=jsonpath='{.status.completionTime}' "$BR" --timeout=55m
+              succeeded=$(oc get "$BR" -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}')
+              echo "==> Succeeded=$succeeded"
+              [ "$succeeded" = True ] || { oc get "$BR" -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].message}{"\n"}'; exit 1; }

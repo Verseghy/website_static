@@ -1,0 +1,6 @@
+# This repository holds the recipe only. The files that the image serves come
+# out of the image named in the Containerfile at build time and never belong
+# in git (README.md says why). These entries catch a copy of them extracted
+# into the checkout by mistake.
+/docs/
+/images/
