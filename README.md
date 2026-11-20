@@ -156,10 +156,10 @@ follow by themselves.
 For example, CVE-2026-123007 (nginx HTTP/2 flow control) is fixed for RHEL 9
 nginx 1.26 by RHSA-2026:100745 (nginx-core
 `1.26.3-10.module+el9.9.0+25360+9b756829.4`), published on 2026-11-20. The
-base image pinned here, `1-1795131511`, built on 2026-11-19, still carries
-`1.26.3-10.module+el9.9.0+25249+8b47ea83.1`, which predates that fix. This
-server does not enable HTTP/2, the protocol the flaw is in; the next base
-image that carries the fixed build is still the one to move to.
+base image pinned here, `1-1795186183`, built on 2026-11-20, carries that
+build of `nginx`, `nginx-core` and `nginx-filesystem`; earlier tags carry
+older builds, which predate the fix. This server does not enable HTTP/2, the
+protocol the flaw is in; it moved to the fixed build all the same.
 
 Stay on UBI 9: a UBI 10 base image does not run on the hub's CPUs, and the
 build runs it there.

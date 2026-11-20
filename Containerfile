@@ -9,7 +9,7 @@
 # UBI 10 needs x86-64-v3 CPUs, which the hub lacks, and the hub runs this
 # build (the RUNs below execute the base image) as well as staging. README.md,
 # "Moving to a newer base image", says how to bump it.
-FROM registry.access.redhat.com/ubi9/nginx-126:1-1795131511@sha256:c5303082ec29d413cefea933e1bdc46d4c1f8d41fe00b2ff829b0a1b31887b2e
+FROM registry.access.redhat.com/ubi9/nginx-126:1-1795186183@sha256:17ac46a19d2294a8e38057b2aac6df0956a1b950fa04b4ea2d9192618d23b324
 
 # Set by .tekton/push.yaml to the commit being built.
 ARG SOURCE_COMMIT=unknown
